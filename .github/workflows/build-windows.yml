@@ -11,32 +11,31 @@ jobs:
     runs-on: windows-latest
     
     steps:
-      - name: 1. 检出代码
+            - name: 1. 检出代码
         uses: actions/checkout@v4
-        
-      # 新增：强制指定 Python 版本，避开 Windows 自带的权限冲突
+
+      # 1. 必须强指定 Python 3.11，避免 3.14 的兼容性问题
       - name: 设置 Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          
-      # 新增：强行删除 Windows 自带的 Python 占位符，解决 EACCES 权限报错
+
+      # 2. 删除 Windows 自带的 Python 占位符
       - name: 删除 WindowsApps 的 Python 别名
         shell: pwsh
         run: Remove-Item -Force -Recurse "$env:LOCALAPPDATA\Microsoft\WindowsApps\python.exe" -ErrorAction SilentlyContinue
 
-      # 2. 安装 Qt6 (完全云端下载，无需本地安装)
-      # 请根据你实际的 Qt 版本和需要模块修改 version 和 modules
+      # 3. 安装 Qt6
       - name: 2. 安装 Qt6
         uses: jurplel/install-qt-action@v4
         with:
-          version: '6.6.0' 
+          version: '6.6.0'
           host: 'windows'
           target: 'desktop'
-          arch: 'win64_msvc2019_64'
-          # 根据你 README 的清单配置所需模块
+          arch: 'win64_msvc2022_64' # 务必改成 2022，匹配最新的 Windows 环境
           modules: 'qtmultimedia qtnetworkauth qtserialport qtsvg qtquick3d qtquickcontrols2'
-          cache: true # 缓存 Qt，大幅加快后续构建
+          cache: true
+          # 千万注意：下面这两行必须删掉！不要保留 aqtversion 和 py7zrversion
 
       # 3. 设置 vcpkg (处理 Protobuf, Abseil, Paho MQTT, FFmpeg)
       - name: 3. 配置 vcpkg 并缓存
