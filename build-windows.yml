@@ -1,0 +1,98 @@
+name: Build and Package for Windows (Cloud Only)
+
+on:
+  workflow_dispatch: # 核心：允许你在 GitHub 网页上手动点击按钮触发构建，免去频繁改代码触发
+  push:
+    tags:
+      - 'v*' # 打版本标签时自动打包发布
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    
+    steps:
+      - name: 1. 检出代码
+        uses: actions/checkout@v4
+
+      # 2. 安装 Qt6 (完全云端下载，无需本地安装)
+      # 请根据你实际的 Qt 版本和需要模块修改 version 和 modules
+      - name: 2. 安装 Qt6
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: '6.6.0' 
+          host: 'windows'
+          target: 'desktop'
+          arch: 'win64_msvc2019_64'
+          # 根据你 README 的清单配置所需模块
+          modules: 'qtmultimedia qtnetworkauth qtserialport qtsvg qtquick3d qtquickcontrols2'
+          cache: true # 缓存 Qt，大幅加快后续构建
+
+      # 3. 设置 vcpkg (处理 Protobuf, Abseil, Paho MQTT, FFmpeg)
+      - name: 3. 配置 vcpkg 并缓存
+        uses: lukka/run-vcpkg@v11
+        with:
+          vcpkgGitCommitId: 'a42af01b72c28a8e1d7b48107b33e4f286a55ef6' # 固定版本，避免上游更新导致构建失败
+          
+      - name: 4. 安装 C++ 依赖 (通过 vcpkg)
+        # 注意：FFmpeg 通过 vcpkg 编译可能需要 1-2 小时，这里使用经典模式
+        run: |
+          vcpkg install protobuf:x64-windows abseil:x64-windows paho-mqtt:x64-windows ffmpeg:x64-windows
+
+      # 5. 配置 CMake
+      - name: 5. 配置 CMake
+        run: |
+          cmake -B build -S . -G "Visual Studio 17 2022" -A x64 `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake" `
+            -DCMAKE_PREFIX_PATH="${{ env.Qt6_DIR }}"
+
+      # 6. 编译项目 (输出详细日志，方便盲调)
+      - name: 6. 编译项目
+        run: cmake --build build --config Release --parallel
+
+      # 7. 准备发布目录并收集依赖
+      # 你需要将 your_app_name 替换为你 CMakeLists.txt 中定义的 target 名字
+      - name: 7. 收集依赖并打包
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist
+          
+          # 找到构建出的 exe，复制到 dist 目录
+          # 如果可执行文件名字不一样，请修改 your_app_name.exe
+          Copy-Item "build\Release\your_app_name.exe" -Destination dist\
+          
+          # 复制项目配置文件（根据你的目录结构）
+          Copy-Item "config.example.json" -Destination dist\ -ErrorAction SilentlyContinue
+          Copy-Item "resources" -Destination dist\ -Recurse -ErrorAction SilentlyContinue
+          Copy-Item "videoplayer.sh" -Destination dist\ -ErrorAction SilentlyContinue
+
+          # 运行 windeployqt 收集 Qt 相关的 DLL
+          windeployqt dist\your_app_name.exe
+
+          # 收集 vcpkg 的依赖 DLL (Protobuf, FFmpeg 等)
+          # 这是一个非常关键且容易遗漏的步骤！需要将 vcpkg 安装的 bin 目录下的 dll 复制过来
+          $vcpkgBin = "${{ github.workspace }}\vcpkg\installed\x64-windows\bin"
+          if (Test-Path $vcpkgBin) {
+            Copy-Item "$vcpkgBin\*.dll" -Destination dist\ -Force -ErrorAction SilentlyContinue
+          }
+
+          # 补充 MSVC 运行库 (防止用户电脑没有安装 VC++ Redistributable)
+          Copy-Item "C:\Windows\System32\vcruntime140.dll" -Destination dist\ -ErrorAction SilentlyContinue
+          Copy-Item "C:\Windows\System32\msvcp140.dll" -Destination dist\ -ErrorAction SilentlyContinue
+
+          # 打包为 ZIP
+          Compress-Archive -Path dist\* -DestinationPath your_app_windows_x64.zip
+
+      # 8. 将打包好的 ZIP 上传到 Actions 页面供下载
+      - name: 8. 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-package
+          path: your_app_windows_x64.zip
+
+      # 9. (可选) 如果是打 Tag 触发的，自动发布到 Release
+      - name: 9. 发布到 Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: your_app_windows_x64.zip
