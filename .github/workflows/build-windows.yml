@@ -13,6 +13,12 @@ jobs:
     steps:
       - name: 1. 检出代码
         uses: actions/checkout@v4
+        
+      # 新增：强制指定 Python 版本，避开 Windows 自带的权限冲突
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
       # 2. 安装 Qt6 (完全云端下载，无需本地安装)
       # 请根据你实际的 Qt 版本和需要模块修改 version 和 modules
