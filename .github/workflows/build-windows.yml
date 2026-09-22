@@ -19,6 +19,11 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+          
+      # 新增：强行删除 Windows 自带的 Python 占位符，解决 EACCES 权限报错
+      - name: 删除 WindowsApps 的 Python 别名
+        shell: pwsh
+        run: Remove-Item -Force -Recurse "$env:LOCALAPPDATA\Microsoft\WindowsApps\python.exe" -ErrorAction SilentlyContinue
 
       # 2. 安装 Qt6 (完全云端下载，无需本地安装)
       # 请根据你实际的 Qt 版本和需要模块修改 version 和 modules
