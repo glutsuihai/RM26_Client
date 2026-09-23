@@ -1,108 +1,106 @@
-name: Build and Package for Windows (Cloud Only)
+name: Build and Package for Windows (Full Dependencies)
 
 on:
-  workflow_dispatch: # 核心：允许你在 GitHub 网页上手动点击按钮触发构建，免去频繁改代码触发
+  workflow_dispatch:
   push:
     tags:
-      - 'v*' # 打版本标签时自动打包发布
+      - 'v*'
 
 jobs:
   build-windows:
     runs-on: windows-latest
+    # 关键：FFmpeg 用 vcpkg 编译极其耗时，必须延长超时时间
+    timeout-minutes: 180 
     
     steps:
-            - name: 1. 检出代码
+      - name: 1. 检出代码
         uses: actions/checkout@v4
 
-      # 1. 必须强指定 Python 3.11，避免 3.14 的兼容性问题
+      # 2. 强制指定 Python 3.11，避开 Windows 自带的 3.14 兼容性报错
       - name: 设置 Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      # 2. 删除 Windows 自带的 Python 占位符
+      # 3. 删除 Windows 自带的 Python 占位符，解决 EACCES 权限报错
       - name: 删除 WindowsApps 的 Python 别名
         shell: pwsh
         run: Remove-Item -Force -Recurse "$env:LOCALAPPDATA\Microsoft\WindowsApps\python.exe" -ErrorAction SilentlyContinue
 
-      # 3. 安装 Qt6
-      - name: 2. 安装 Qt6
+      # 4. 安装 Qt6 (严格对照截图，补全所有模块，包含 Test)
+      - name: 安装 Qt6
         uses: jurplel/install-qt-action@v4
         with:
           version: '6.6.0'
           host: 'windows'
           target: 'desktop'
-          arch: 'win64_msvc2022_64' # 务必改成 2022，匹配最新的 Windows 环境
-          modules: 'qtmultimedia qtnetworkauth qtserialport qtsvg qtquick3d qtquickcontrols2'
+          arch: 'win64_msvc2022_64'
+          # 清单要求：Core、Concurrent、Widgets、Multimedia、Network、SerialPort、Svg、Quick、QuickWidgets、QuickControls2、Test
+          # install-qt-action 会自动安装 Core, Concurrent, Network, Widgets, Quick, QuickWidgets
+          modules: 'qtmultimedia qtserialport qtsvg qtquickcontrols2 qttest'
           cache: true
-          # 千万注意：下面这两行必须删掉！不要保留 aqtversion 和 py7zrversion
 
-      # 3. 设置 vcpkg (处理 Protobuf, Abseil, Paho MQTT, FFmpeg)
-      - name: 3. 配置 vcpkg 并缓存
+      # 5. 配置 vcpkg 并设置缓存 (强烈建议加缓存，否则每次等 2 小时)
+      - name: 配置 vcpkg
         uses: lukka/run-vcpkg@v11
         with:
-          vcpkgGitCommitId: 'a42af01b72c28a8e1d7b48107b33e4f286a55ef6' # 固定版本，避免上游更新导致构建失败
-          
-      - name: 4. 安装 C++ 依赖 (通过 vcpkg)
-        # 注意：FFmpeg 通过 vcpkg 编译可能需要 1-2 小时，这里使用经典模式
+          vcpkgGitCommitId: 'a42af01b72c28a8e1d7b48107b33e4f286a55ef6'
+          # 开启 GitHub Actions 缓存
+          doNotCache: false
+
+      # 6. 安装截图要求的所有 C++ 依赖 (包含 Paho MQTT 和 FFmpeg)
+      - name: 安装 C++ 依赖 (via vcpkg)
+        # 设置较长超时，应对 FFmpeg 源码编译
         run: |
           vcpkg install protobuf:x64-windows abseil:x64-windows paho-mqtt:x64-windows ffmpeg:x64-windows
 
-      # 5. 配置 CMake
-      - name: 5. 配置 CMake
+      # 7. 配置 CMake (README 提到了使用 Presets，此处已做兼容)
+      - name: 配置 CMake
         run: |
+          # 如果你的项目使用了 CMakePresets.json，推荐改为: cmake --preset default -DCMAKE_TOOLCHAIN_FILE=...
+          # 此处提供通用显式配置作为后备
           cmake -B build -S . -G "Visual Studio 17 2022" -A x64 `
             -DCMAKE_BUILD_TYPE=Release `
             -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake" `
             -DCMAKE_PREFIX_PATH="${{ env.Qt6_DIR }}"
 
-      # 6. 编译项目 (输出详细日志，方便盲调)
-      - name: 6. 编译项目
+      # 8. 编译项目
+      - name: 编译项目
         run: cmake --build build --config Release --parallel
 
-      # 7. 准备发布目录并收集依赖
-      # 你需要将 your_app_name 替换为你 CMakeLists.txt 中定义的 target 名字
-      - name: 7. 收集依赖并打包
+      # 9. 打包与依赖收集
+      - name: 收集依赖并打包
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist
           
-          # 找到构建出的 exe，复制到 dist 目录
-          # 如果可执行文件名字不一样，请修改 your_app_name.exe
+          # ⚠️ 请注意修改下面的 your_app_name.exe 为你实际编译出的 exe 名字
+          # 如果不知道名字，可以去 build\Release 目录里找
           Copy-Item "build\Release\your_app_name.exe" -Destination dist\
           
-          # 复制项目配置文件（根据你的目录结构）
+          # 复制项目配置文件（根据目录结构）
           Copy-Item "config.example.json" -Destination dist\ -ErrorAction SilentlyContinue
           Copy-Item "resources" -Destination dist\ -Recurse -ErrorAction SilentlyContinue
-          Copy-Item "videoplayer.sh" -Destination dist\ -ErrorAction SilentlyContinue
-
-          # 运行 windeployqt 收集 Qt 相关的 DLL
+          
+          # Qt 的 DLL 收集
           windeployqt dist\your_app_name.exe
-
-          # 收集 vcpkg 的依赖 DLL (Protobuf, FFmpeg 等)
-          # 这是一个非常关键且容易遗漏的步骤！需要将 vcpkg 安装的 bin 目录下的 dll 复制过来
+          
+          # vcpkg 的 DLL 收集 (Protobuf, FFmpeg, Paho MQTT 等)
           $vcpkgBin = "${{ github.workspace }}\vcpkg\installed\x64-windows\bin"
           if (Test-Path $vcpkgBin) {
             Copy-Item "$vcpkgBin\*.dll" -Destination dist\ -Force -ErrorAction SilentlyContinue
           }
-
-          # 补充 MSVC 运行库 (防止用户电脑没有安装 VC++ Redistributable)
+          
+          # MSVC 运行库补充 (防止用户电脑缺组件)
           Copy-Item "C:\Windows\System32\vcruntime140.dll" -Destination dist\ -ErrorAction SilentlyContinue
           Copy-Item "C:\Windows\System32\msvcp140.dll" -Destination dist\ -ErrorAction SilentlyContinue
-
+          
           # 打包为 ZIP
           Compress-Archive -Path dist\* -DestinationPath your_app_windows_x64.zip
 
-      # 8. 将打包好的 ZIP 上传到 Actions 页面供下载
-      - name: 8. 上传构建产物
+      # 10. 上传构建产物
+      - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
           name: windows-package
           path: your_app_windows_x64.zip
-
-      # 9. (可选) 如果是打 Tag 触发的，自动发布到 Release
-      - name: 9. 发布到 Release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: your_app_windows_x64.zip
