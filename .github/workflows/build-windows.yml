@@ -1,4 +1,4 @@
-name: Build and Package for Windows (Full Dependencies)
+name: Build and Package for Windows (Cloud Only)
 
 on:
   workflow_dispatch:
@@ -9,25 +9,24 @@ on:
 jobs:
   build-windows:
     runs-on: windows-latest
-    # 关键：FFmpeg 用 vcpkg 编译极其耗时，必须延长超时时间
-    timeout-minutes: 180 
+    timeout-minutes: 180
     
     steps:
       - name: 1. 检出代码
         uses: actions/checkout@v4
 
-      # 2. 强制指定 Python 3.11，避开 Windows 自带的 3.14 兼容性报错
+      # 1. 设置 Python 3.11
       - name: 设置 Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      # 3. 删除 Windows 自带的 Python 占位符，解决 EACCES 权限报错
+      # 2. 删除 Windows 自带的 Python 别名 (防止权限冲突)
       - name: 删除 WindowsApps 的 Python 别名
         shell: pwsh
         run: Remove-Item -Force -Recurse "$env:LOCALAPPDATA\Microsoft\WindowsApps\python.exe" -ErrorAction SilentlyContinue
 
-      # 4. 安装 Qt6 (严格对照截图，补全所有模块，包含 Test)
+      # 3. 安装 Qt6 (关键是强制指定 python: '3.11')
       - name: 安装 Qt6
         uses: jurplel/install-qt-action@v4
         with:
@@ -35,70 +34,58 @@ jobs:
           host: 'windows'
           target: 'desktop'
           arch: 'win64_msvc2022_64'
-          # 清单要求：Core、Concurrent、Widgets、Multimedia、Network、SerialPort、Svg、Quick、QuickWidgets、QuickControls2、Test
-          # install-qt-action 会自动安装 Core, Concurrent, Network, Widgets, Quick, QuickWidgets
+          python: '3.11' # ⭐ 强制指定 Python 版本，避开 3.14 报错
           modules: 'qtmultimedia qtserialport qtsvg qtquickcontrols2 qttest'
           cache: true
 
-      # 5. 配置 vcpkg 并设置缓存 (强烈建议加缓存，否则每次等 2 小时)
+      # 4. 配置 vcpkg
       - name: 配置 vcpkg
         uses: lukka/run-vcpkg@v11
         with:
           vcpkgGitCommitId: 'a42af01b72c28a8e1d7b48107b33e4f286a55ef6'
-          # 开启 GitHub Actions 缓存
           doNotCache: false
 
-      # 6. 安装截图要求的所有 C++ 依赖 (包含 Paho MQTT 和 FFmpeg)
-      - name: 安装 C++ 依赖 (via vcpkg)
-        # 设置较长超时，应对 FFmpeg 源码编译
+      # 5. 安装 C++ 依赖
+      - name: 安装 C++ 依赖
         run: |
           vcpkg install protobuf:x64-windows abseil:x64-windows paho-mqtt:x64-windows ffmpeg:x64-windows
 
-      # 7. 配置 CMake (README 提到了使用 Presets，此处已做兼容)
+      # 6. 配置 CMake
       - name: 配置 CMake
         run: |
-          # 如果你的项目使用了 CMakePresets.json，推荐改为: cmake --preset default -DCMAKE_TOOLCHAIN_FILE=...
-          # 此处提供通用显式配置作为后备
           cmake -B build -S . -G "Visual Studio 17 2022" -A x64 `
             -DCMAKE_BUILD_TYPE=Release `
             -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake" `
             -DCMAKE_PREFIX_PATH="${{ env.Qt6_DIR }}"
 
-      # 8. 编译项目
+      # 7. 编译
       - name: 编译项目
         run: cmake --build build --config Release --parallel
 
-      # 9. 打包与依赖收集
+      # 8. 打包
       - name: 收集依赖并打包
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist
           
-          # ⚠️ 请注意修改下面的 your_app_name.exe 为你实际编译出的 exe 名字
-          # 如果不知道名字，可以去 build\Release 目录里找
-          Copy-Item "build\Release\your_app_name.exe" -Destination dist\
+          # ⚠️ 修改：把 your_app_name.exe 换成你 CMakeLists.txt 里真实生成的 exe 名字
+          Copy-Item "build\Release\your_app_name.exe" -Destination dist\ -ErrorAction SilentlyContinue
           
-          # 复制项目配置文件（根据目录结构）
           Copy-Item "config.example.json" -Destination dist\ -ErrorAction SilentlyContinue
           Copy-Item "resources" -Destination dist\ -Recurse -ErrorAction SilentlyContinue
           
-          # Qt 的 DLL 收集
           windeployqt dist\your_app_name.exe
           
-          # vcpkg 的 DLL 收集 (Protobuf, FFmpeg, Paho MQTT 等)
           $vcpkgBin = "${{ github.workspace }}\vcpkg\installed\x64-windows\bin"
           if (Test-Path $vcpkgBin) {
             Copy-Item "$vcpkgBin\*.dll" -Destination dist\ -Force -ErrorAction SilentlyContinue
           }
-          
-          # MSVC 运行库补充 (防止用户电脑缺组件)
           Copy-Item "C:\Windows\System32\vcruntime140.dll" -Destination dist\ -ErrorAction SilentlyContinue
           Copy-Item "C:\Windows\System32\msvcp140.dll" -Destination dist\ -ErrorAction SilentlyContinue
           
-          # 打包为 ZIP
           Compress-Archive -Path dist\* -DestinationPath your_app_windows_x64.zip
 
-      # 10. 上传构建产物
+      # 9. 上传产物
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
