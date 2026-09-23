@@ -1,4 +1,4 @@
-name: Build and Package for Windows (Cloud Only)
+name: Build and Package for Windows (Manual Qt Setup)
 
 on:
   workflow_dispatch:
@@ -15,54 +15,60 @@ jobs:
       - name: 1. 检出代码
         uses: actions/checkout@v4
 
-      # 1. 删除 Windows 自带的 Python 别名 (防止权限冲突)
-      - name: 删除 WindowsApps 的 Python 别名
-        shell: pwsh
-        run: Remove-Item -Force -Recurse "$env:LOCALAPPDATA\Microsoft\WindowsApps\python.exe" -ErrorAction SilentlyContinue
-
-      # 2. 安装 Qt6 (关键是强制指定 setup-python: '3.11')
-      - name: 安装 Qt6
-        uses: jurplel/install-qt-action@v4
+      # 2. 设置一个稳定可靠的 Python 版本
+      - name: 设置 Python
+        uses: actions/setup-python@v5
         with:
-          version: '6.6.0'
-          host: 'windows'
-          target: 'desktop'
-          arch: 'win64_msvc2022_64'
-          setup-python: '3.11' # ⭐ 修正：改用正确的参数名
-          modules: 'qtmultimedia qtserialport qtsvg qtquickcontrols2 qttest'
-          cache: true
+          python-version: '3.10' # 3.10 是兼容性最好的版本
 
-      # 3. 配置 vcpkg
+      # 3. 手动安装 Qt6 (彻底绕开 install-qt-action 的 Python 冲突)
+      - name: 手动安装 Qt6
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          pip install aqtinstall py7zr
+          
+          # 创建 Qt 安装目录
+          New-Item -ItemType Directory -Force -Path "C:\Qt"
+          
+          # 使用 aqtinstall 官方命令安装 Qt 6.6.0 及所有需要的模块
+          python -m aqt install-qt windows desktop 6.6.0 win64_msvc2022_64 -O C:\Qt -m qtmultimedia qtserialport qtsvg qtquickcontrols2 qttest
+          
+          # 将 Qt 路径写入环境变量，供后面的 CMake 使用
+          echo "Qt6_DIR=C:\Qt\6.6.0\msvc2022_64" >> $env:GITHUB_ENV
+          echo "CMAKE_PREFIX_PATH=C:\Qt\6.6.0\msvc2022_64" >> $env:GITHUB_ENV
+          echo "C:\Qt\6.6.0\msvc2022_64\bin" >> $env:GITHUB_PATH
+
+      # 4. 配置 vcpkg
       - name: 配置 vcpkg
         uses: lukka/run-vcpkg@v11
         with:
           vcpkgGitCommitId: 'a42af01b72c28a8e1d7b48107b33e4f286a55ef6'
           doNotCache: false
 
-      # 4. 安装 C++ 依赖
+      # 5. 安装 C++ 依赖
       - name: 安装 C++ 依赖
         run: |
           vcpkg install protobuf:x64-windows abseil:x64-windows paho-mqtt:x64-windows ffmpeg:x64-windows
 
-      # 5. 配置 CMake
+      # 6. 配置 CMake
       - name: 配置 CMake
         run: |
           cmake -B build -S . -G "Visual Studio 17 2022" -A x64 `
             -DCMAKE_BUILD_TYPE=Release `
-            -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake" `
-            -DCMAKE_PREFIX_PATH="${{ env.Qt6_DIR }}"
+            -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake"
 
-      # 6. 编译
+      # 7. 编译
       - name: 编译项目
         run: cmake --build build --config Release --parallel
 
-      # 7. 打包
+      # 8. 打包
       - name: 收集依赖并打包
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist
           
-          # ⚠️ 注意：请把 your_app_name.exe 替换为你真实的 exe 名字
+          # ⚠️ 修改：把 your_app_name.exe 换成你 CMakeLists.txt 里真实生成的 exe 名字
           Copy-Item "build\Release\your_app_name.exe" -Destination dist\ -ErrorAction SilentlyContinue
           
           Copy-Item "config.example.json" -Destination dist\ -ErrorAction SilentlyContinue
@@ -79,7 +85,7 @@ jobs:
           
           Compress-Archive -Path dist\* -DestinationPath your_app_windows_x64.zip
 
-      # 8. 上传产物
+      # 9. 上传产物
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
