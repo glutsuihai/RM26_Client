@@ -15,18 +15,12 @@ jobs:
       - name: 1. 检出代码
         uses: actions/checkout@v4
 
-      # 1. 设置 Python 3.11
-      - name: 设置 Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
-      # 2. 删除 Windows 自带的 Python 别名 (防止权限冲突)
+      # 1. 删除 Windows 自带的 Python 别名 (防止权限冲突)
       - name: 删除 WindowsApps 的 Python 别名
         shell: pwsh
         run: Remove-Item -Force -Recurse "$env:LOCALAPPDATA\Microsoft\WindowsApps\python.exe" -ErrorAction SilentlyContinue
 
-      # 3. 安装 Qt6 (关键是强制指定 python: '3.11')
+      # 2. 安装 Qt6 (关键是强制指定 setup-python: '3.11')
       - name: 安装 Qt6
         uses: jurplel/install-qt-action@v4
         with:
@@ -34,23 +28,23 @@ jobs:
           host: 'windows'
           target: 'desktop'
           arch: 'win64_msvc2022_64'
-          python: '3.11' # ⭐ 强制指定 Python 版本，避开 3.14 报错
+          setup-python: '3.11' # ⭐ 修正：改用正确的参数名
           modules: 'qtmultimedia qtserialport qtsvg qtquickcontrols2 qttest'
           cache: true
 
-      # 4. 配置 vcpkg
+      # 3. 配置 vcpkg
       - name: 配置 vcpkg
         uses: lukka/run-vcpkg@v11
         with:
           vcpkgGitCommitId: 'a42af01b72c28a8e1d7b48107b33e4f286a55ef6'
           doNotCache: false
 
-      # 5. 安装 C++ 依赖
+      # 4. 安装 C++ 依赖
       - name: 安装 C++ 依赖
         run: |
           vcpkg install protobuf:x64-windows abseil:x64-windows paho-mqtt:x64-windows ffmpeg:x64-windows
 
-      # 6. 配置 CMake
+      # 5. 配置 CMake
       - name: 配置 CMake
         run: |
           cmake -B build -S . -G "Visual Studio 17 2022" -A x64 `
@@ -58,17 +52,17 @@ jobs:
             -DCMAKE_TOOLCHAIN_FILE="${{ github.workspace }}/vcpkg/scripts/buildsystems/vcpkg.cmake" `
             -DCMAKE_PREFIX_PATH="${{ env.Qt6_DIR }}"
 
-      # 7. 编译
+      # 6. 编译
       - name: 编译项目
         run: cmake --build build --config Release --parallel
 
-      # 8. 打包
+      # 7. 打包
       - name: 收集依赖并打包
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist
           
-          # ⚠️ 修改：把 your_app_name.exe 换成你 CMakeLists.txt 里真实生成的 exe 名字
+          # ⚠️ 注意：请把 your_app_name.exe 替换为你真实的 exe 名字
           Copy-Item "build\Release\your_app_name.exe" -Destination dist\ -ErrorAction SilentlyContinue
           
           Copy-Item "config.example.json" -Destination dist\ -ErrorAction SilentlyContinue
@@ -85,7 +79,7 @@ jobs:
           
           Compress-Archive -Path dist\* -DestinationPath your_app_windows_x64.zip
 
-      # 9. 上传产物
+      # 8. 上传产物
       - name: 上传构建产物
         uses: actions/upload-artifact@v4
         with:
